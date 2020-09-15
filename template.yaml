@@ -1,0 +1,24 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  OpenMarket-Transaction-Lambda
+
+  Sample SAM Template for OpenMarket-Transaction-Lambda
+
+Resources:
+  TransactionProcessorLambda:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      FunctionName: TransactionProcessorLambda
+      CodeUri: TransactionLambdaFunction
+      Handler: io.openmarket.transaction.lambda.entry.LambdaEntry::handleRequest
+      Runtime: java8
+      MemorySize: 512
+      Timeout: 30
+      Role: arn:aws:iam::185046651126:role/LambdaRole
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: arn:aws:sqs:us-west-2:185046651126:TransactionTaskQueue
+            BatchSize: 10

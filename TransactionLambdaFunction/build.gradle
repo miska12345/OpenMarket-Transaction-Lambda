@@ -1,0 +1,63 @@
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+}
+plugins {
+    id 'java'
+    id 'jacoco'
+    id 'java-library'
+    id "idea"
+}
+
+group 'io.openmarket'
+version '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+    jcenter()
+    maven { url 'https://jitpack.io' }
+    maven {
+        name "DynamoDB Local Release Repository - US West (Oregon) Region"
+        url "https://s3-us-west-2.amazonaws.com/dynamodb-local/release"
+    }
+}
+
+dependencies {
+    compileOnly 'org.projectlombok:lombok:1.18.12'
+    annotationProcessor 'org.projectlombok:lombok:1.18.12'
+
+    testCompileOnly 'org.projectlombok:lombok:1.18.12'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.12'
+
+    compile group: 'org.apache.logging.log4j', name: 'log4j-api', version: '2.13.3'
+    compile group: 'org.apache.logging.log4j', name: 'log4j-core', version: '2.13.3'
+
+    implementation 'com.amazonaws:aws-lambda-java-core:1.2.1'
+    implementation 'com.amazonaws:aws-lambda-java-events:3.1.0'
+    runtimeOnly 'com.amazonaws:aws-lambda-java-log4j2:1.2.0'
+
+    implementation platform('com.amazonaws:aws-java-sdk-bom:1.11.859')
+    implementation 'com.amazonaws:aws-java-sdk-dynamodb'
+    implementation 'com.amazonaws:aws-java-sdk-sqs'
+
+    implementation 'com.github.miska12345:OpenMarket-Dao:master-SNAPSHOT'
+
+    implementation("com.google.guava:guava:29.0-jre")
+    implementation 'com.google.code.gson:gson:2.8.6'
+
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.6.1")
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.6.1")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.6.1")
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.6.1'
+    testCompile group: 'org.junit.jupiter', name: 'junit-jupiter-params', version: '5.6.1'
+    testCompile "org.mockito:mockito-core:2.+"
+    testCompile group: 'com.amazonaws', name: 'DynamoDBLocal', version: '1.13.3'
+    testCompile group: 'com.almworks.sqlite4java', name: 'sqlite4java', version: '0.282'
+}
+
+test {
+    useJUnitPlatform()
+    systemProperty("sqlite4java.library.path", "lib")
+    systemProperty("log4j.configurationFile", "log4j.xml")
+}
