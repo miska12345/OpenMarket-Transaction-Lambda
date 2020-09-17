@@ -7,6 +7,7 @@ import com.amazonaws.services.dynamodbv2.model.*;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.openmarket.transaction.dao.dynamodb.TransactionDaoImpl;
+import io.openmarket.transaction.model.MoneyAmount;
 import io.openmarket.transaction.model.Transaction;
 import io.openmarket.transaction.model.TransactionErrorType;
 import io.openmarket.transaction.model.TransactionStatus;
@@ -100,7 +101,7 @@ public class LambdaTest {
         lambda.processTransaction(transaction);
 
         transaction = transactionDao.load(transaction.getTransactionId()).get();
-        assertEquals(TransactionStatus.CONFIRMED, transaction.getStatus());
+        assertEquals(TransactionStatus.COMPLETED, transaction.getStatus());
         verify(transaction.getTransactionId(), INITIAL_BALANCE, INITIAL_BALANCE, PAYER_ID, RECIPIENT_ID);
     }
 
@@ -189,7 +190,7 @@ public class LambdaTest {
 
         for (Transaction t : trans) {
             t = transactionDao.load(t.getTransactionId()).get();
-            assertEquals(TransactionStatus.CONFIRMED, t.getStatus());
+            assertEquals(TransactionStatus.COMPLETED, t.getStatus());
         }
         verifyMultipleTransactions(trans.stream().map(Transaction::getTransactionId).collect(Collectors.toSet()),
                 INITIAL_BALANCE, 0.0, PAYER_ID, RECIPIENT_ID);
@@ -236,11 +237,12 @@ public class LambdaTest {
         Map<String, Double> amount = new HashMap<>();
         for (String t : transactions) {
             Transaction transaction = transactionDao.load(t).get();
-            if (transaction.getStatus().equals(TransactionStatus.CONFIRMED)) {
-                if (!amount.containsKey(transaction.getCurrencyId())) {
-                    amount.put(transaction.getCurrencyId(), 0.0);
+            if (transaction.getStatus().equals(TransactionStatus.COMPLETED)) {
+                if (!amount.containsKey(transaction.getMoneyAmount().getCurrencyId())) {
+                    amount.put(transaction.getMoneyAmount().getCurrencyId(), 0.0);
                 }
-                amount.put(transaction.getCurrencyId(), amount.get(transaction.getCurrencyId()) + transaction.getAmount());
+                amount.put(transaction.getMoneyAmount().getCurrencyId(),
+                        amount.get(transaction.getMoneyAmount().getCurrencyId()) + transaction.getMoneyAmount().getAmount());
             }
         }
         Map<String, Double> payerAfterBalance = walletDao.load(payerId).get().getCoins();
@@ -257,11 +259,13 @@ public class LambdaTest {
     private void verify(String transactionId, Double payerBeforeBalance, Double recipientBeforeBalance,
                         String payerId, String recipientId) {
         Transaction transaction = transactionDao.load(transactionId).get();
-        Double payerAfterBalance = walletDao.load(payerId).get().getCoins().getOrDefault(transaction.getCurrencyId(), 0.0);
-        Double recipientAfterBalance = walletDao.load(recipientId).get().getCoins().getOrDefault(transaction.getCurrencyId(), 0.0);
-        if (transaction.getStatus().equals(TransactionStatus.CONFIRMED)) {
-            Double truePayerAfterBalance = payerBeforeBalance - transaction.getAmount();
-            Double trueRecipientAfterBalance = recipientBeforeBalance + transaction.getAmount();
+        Double payerAfterBalance = walletDao.load(payerId).get().getCoins()
+                .getOrDefault(transaction.getMoneyAmount().getCurrencyId(), 0.0);
+        Double recipientAfterBalance = walletDao.load(recipientId).get().getCoins()
+                .getOrDefault(transaction.getMoneyAmount().getCurrencyId(), 0.0);
+        if (transaction.getStatus().equals(TransactionStatus.COMPLETED)) {
+            Double truePayerAfterBalance = payerBeforeBalance - transaction.getMoneyAmount().getAmount();
+            Double trueRecipientAfterBalance = recipientBeforeBalance + transaction.getMoneyAmount().getAmount();
             assertEquals(truePayerAfterBalance, payerAfterBalance);
             assertEquals(trueRecipientAfterBalance, recipientAfterBalance);
         } else {
@@ -280,8 +284,9 @@ public class LambdaTest {
 
     private Transaction createTransaction(String currencyId, double amount) {
         Transaction transaction = Transaction.builder().transactionId(UUID.randomUUID().toString())
-                .amount(amount).payerId(PAYER_ID).recipientId(RECIPIENT_ID)
-                .status(TransactionStatus.PENDING).currencyId(currencyId).type(TransactionType.TRANSFER).build();
+                .moneyAmount(new MoneyAmount().withCurrencyId(currencyId).withAmount(amount))
+                .payerId(PAYER_ID).recipientId(RECIPIENT_ID)
+                .status(TransactionStatus.PENDING).type(TransactionType.TRANSFER).build();
         transactionDao.save(transaction);
         return transaction;
     }

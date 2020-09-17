@@ -4,6 +4,7 @@ import com.amazonaws.services.dynamodbv2.model.*;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.openmarket.transaction.lambda.config.LambdaConfig;
 import io.openmarket.transaction.dao.dynamodb.TransactionDao;
 import io.openmarket.transaction.model.Transaction;
@@ -75,15 +76,14 @@ public class TransactionLambda {
         final Map<String, AttributeValue> payerKey = getOwnerKey(transaction.getPayerId());
         final Map<String, AttributeValue> recipientKey = getOwnerKey(transaction.getRecipientId());
 
-        final Map<String, String> attributeNames = getAttributeName(transaction.getCurrencyId());
-        final Map<String, AttributeValue> attributeValues = getAttributeValue(transaction.getAmount());
-        final Map<String, AttributeValue> transacAttrValues = getTransacValue(TransactionStatus.CONFIRMED);
+        final Map<String, String> attributeNames = getAttributeName(transaction.getMoneyAmount().getCurrencyId());
+        final Map<String, AttributeValue> attributeValues = getAttributeValue(transaction.getMoneyAmount().getAmount());
+        final Map<String, AttributeValue> transacAttrValues = getTransacValue(TransactionStatus.COMPLETED);
 
         final Map<String, AttributeValue> transacKey = getTransacKey(transaction.getTransactionId());
 
         // Create the coin slot if it doesn't already exist.
-        createCurrencySlot(transaction.getRecipientId(), transaction.getCurrencyId());
-
+        createCurrencySlot(transaction.getRecipientId(), transaction.getMoneyAmount().getCurrencyId());
         final List<TransactWriteItem> updateRequests = ImmutableList.of(
                 new TransactWriteItem().withUpdate(new Update()
                         .withKey(payerKey)
