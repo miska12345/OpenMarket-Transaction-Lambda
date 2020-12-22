@@ -7,10 +7,10 @@ import com.amazonaws.services.dynamodbv2.model.*;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.openmarket.transaction.dao.dynamodb.TransactionDaoImpl;
-import io.openmarket.transaction.model.MoneyAmount;
 import io.openmarket.transaction.model.Transaction;
 import io.openmarket.transaction.model.TransactionErrorType;
 import io.openmarket.transaction.model.TransactionStatus;
+import io.openmarket.transaction.model.TransactionTaskResult;
 import io.openmarket.transaction.model.TransactionType;
 import io.openmarket.wallet.dao.dynamodb.WalletDao;
 import io.openmarket.wallet.dao.dynamodb.WalletDaoImpl;
@@ -82,6 +82,34 @@ public class LambdaTest {
     }
 
     @Test
+    public void test_Correct_Transaction_Task_Result_Normal() {
+        Transaction transaction = createTransaction(TRANSACTION_AMOUNT);
+
+        createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET);
+        createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
+
+        TransactionTaskResult result = lambda.processTransaction(transaction);
+        assertEquals(transaction.getTransactionId(), result.getTransactionId());
+        assertEquals(transaction.getType(), result.getType());
+        assertEquals(TransactionErrorType.NONE, result.getError());
+        assertEquals(TransactionStatus.COMPLETED, result.getStatus());
+    }
+
+    @Test
+    public void test_Correct_Transaction_Task_Result_Insufficient_Balance() {
+        Transaction transaction = createTransaction(TRANSACTION_AMOUNT);
+
+        createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET_ZERO_BALANCE);
+        createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
+
+        TransactionTaskResult result = lambda.processTransaction(transaction);
+        assertEquals(transaction.getTransactionId(), result.getTransactionId());
+        assertEquals(transaction.getType(), result.getType());
+        assertEquals(TransactionErrorType.INSUFFICIENT_BALANCE, result.getError());
+        assertEquals(TransactionStatus.ERROR, result.getStatus());
+    }
+
+    @Test
     public void test_Add_Currency_To_Wallet() {
         String myCurrency = "6756";
         createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
@@ -140,6 +168,21 @@ public class LambdaTest {
 
         lambda.processTransaction(transaction);
         verify(transaction.getTransactionId(), 0.0, INITIAL_BALANCE, PAYER_ID, RECIPIENT_ID);
+    }
+
+    @Test
+    public void check_Refund_Basic() {
+        Transaction transaction = createTransaction(TRANSACTION_AMOUNT);
+
+        Wallet payer = createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET);
+        Wallet recipient = createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
+
+        lambda.processTransaction(transaction);
+
+        Transaction refundTransaction = createRefundTransaction(transaction);
+        lambda.processTransaction(refundTransaction);
+
+        verifyRefund(refundTransaction.getTransactionId(), payer, recipient, PAYER_ID, RECIPIENT_ID);
     }
 
     @Test
@@ -207,6 +250,96 @@ public class LambdaTest {
     }
 
     @Test
+    public void test_Racing_Refunds() {
+        ExecutorService executor = Executors.newFixedThreadPool(5);
+        Transaction t = createTransaction(TRANSACTION_AMOUNT);
+
+        Wallet a = createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET);
+        Wallet b = createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
+
+        lambda.processTransaction(t);
+
+        List<Transaction> refunds = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            refunds.add(createRefundTransaction(t));
+        }
+
+        runTask(executor, refunds);
+
+        refunds = refunds.stream()
+                .map(x -> transactionDao.load(x.getTransactionId()).get())
+                .filter(k -> k.getStatus().equals(TransactionStatus.COMPLETED)).collect(Collectors.toList());
+        assertEquals(1, refunds.size());
+        verifyRefund(refunds.get(0).getTransactionId(), a, b, PAYER_ID, RECIPIENT_ID);
+    }
+
+    @Test
+    public void test_Cannot_Refund_If_Insufficient_Balance() {
+        Transaction t = createTransaction(TRANSACTION_AMOUNT);
+
+        createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET);
+        createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
+
+        lambda.processTransaction(t);
+
+        Wallet b = walletDao.load(RECIPIENT_ID).get();
+        b.setCoins(SINGLE_CURRENCY_WALLET_ZERO_BALANCE);
+        walletDao.save(b);
+
+        Transaction refundTransaction = createRefundTransaction(t);
+        lambda.processTransaction(refundTransaction);
+
+        refundTransaction = transactionDao.load(refundTransaction.getTransactionId()).get();
+        t = transactionDao.load(t.getTransactionId()).get();
+        assertEquals(TransactionErrorType.INSUFFICIENT_BALANCE, refundTransaction.getError());
+        assertEquals(TransactionStatus.COMPLETED, t.getStatus());
+    }
+
+    @Test
+    public void test_Refund_Failure_If_Not_Refund_Started() {
+        Transaction t = createTransaction(TRANSACTION_AMOUNT);
+
+        createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET);
+        createUserWallet(RECIPIENT_ID, SINGLE_CURRENCY_WALLET);
+
+        lambda.processTransaction(t);
+
+        Transaction refund = createRefundTransaction(t);
+
+        // Modify the transaction after a refund has been created should fail the refund
+        t = transactionDao.load(t.getTransactionId()).get();
+        t.setStatus(TransactionStatus.COMPLETED);
+        transactionDao.save(t);
+
+        lambda.processTransaction(refund);
+
+        // Final effect should be the transaction, not the refund
+        verify(t.getTransactionId(), INITIAL_BALANCE, INITIAL_BALANCE, PAYER_ID, RECIPIENT_ID);
+    }
+
+    @Test
+    public void test_Refund_Multiple_Currencies() {
+        ExecutorService executor = Executors.newFixedThreadPool(5);
+        Transaction t1 = createTransaction(CURRENCY_ID, TRANSACTION_AMOUNT);
+        Transaction t2 = createTransaction(CURRENCY_ID_2, TRANSACTION_AMOUNT);
+        Transaction t3 = createTransaction(CURRENCY_ID_3, TRANSACTION_AMOUNT);
+
+        createUserWallet(PAYER_ID, MULTIPLE_CURRENCY_WALLET);
+        createUserWallet(RECIPIENT_ID, MULTIPLE_CURRENCY_WALLET);
+
+        lambda.processTransaction(t1);
+        lambda.processTransaction(t2);
+        lambda.processTransaction(t3);
+
+        List<Transaction> refunds = ImmutableList.of(createRefundTransaction(t1), createRefundTransaction(t2),
+                createRefundTransaction(t3));
+        runTask(executor, refunds);
+
+        assertEquals(MULTIPLE_CURRENCY_WALLET, walletDao.load(PAYER_ID).get().getCoins());
+        assertEquals(MULTIPLE_CURRENCY_WALLET, walletDao.load(RECIPIENT_ID).get().getCoins());
+    }
+
+    @Test
     public void test_No_Such_Recipient() {
         Transaction t = createTransaction(TRANSACTION_AMOUNT);
         createUserWallet(PAYER_ID, SINGLE_CURRENCY_WALLET);
@@ -238,11 +371,11 @@ public class LambdaTest {
         for (String t : transactions) {
             Transaction transaction = transactionDao.load(t).get();
             if (transaction.getStatus().equals(TransactionStatus.COMPLETED)) {
-                if (!amount.containsKey(transaction.getMoneyAmount().getCurrencyId())) {
-                    amount.put(transaction.getMoneyAmount().getCurrencyId(), 0.0);
+                if (!amount.containsKey(transaction.getCurrencyId())) {
+                    amount.put(transaction.getCurrencyId(), 0.0);
                 }
-                amount.put(transaction.getMoneyAmount().getCurrencyId(),
-                        amount.get(transaction.getMoneyAmount().getCurrencyId()) + transaction.getMoneyAmount().getAmount());
+                amount.put(transaction.getCurrencyId(),
+                        amount.get(transaction.getCurrencyId()) + transaction.getAmount());
             }
         }
         Map<String, Double> payerAfterBalance = walletDao.load(payerId).get().getCoins();
@@ -260,12 +393,12 @@ public class LambdaTest {
                         String payerId, String recipientId) {
         Transaction transaction = transactionDao.load(transactionId).get();
         Double payerAfterBalance = walletDao.load(payerId).get().getCoins()
-                .getOrDefault(transaction.getMoneyAmount().getCurrencyId(), 0.0);
+                .getOrDefault(transaction.getCurrencyId(), 0.0);
         Double recipientAfterBalance = walletDao.load(recipientId).get().getCoins()
-                .getOrDefault(transaction.getMoneyAmount().getCurrencyId(), 0.0);
+                .getOrDefault(transaction.getCurrencyId(), 0.0);
         if (transaction.getStatus().equals(TransactionStatus.COMPLETED)) {
-            Double truePayerAfterBalance = payerBeforeBalance - transaction.getMoneyAmount().getAmount();
-            Double trueRecipientAfterBalance = recipientBeforeBalance + transaction.getMoneyAmount().getAmount();
+            Double truePayerAfterBalance = payerBeforeBalance - transaction.getAmount();
+            Double trueRecipientAfterBalance = recipientBeforeBalance + transaction.getAmount();
             assertEquals(truePayerAfterBalance, payerAfterBalance);
             assertEquals(trueRecipientAfterBalance, recipientAfterBalance);
         } else {
@@ -274,8 +407,24 @@ public class LambdaTest {
         }
     }
 
-    private void createUserWallet(String ownerId, Map<String, Double> coins) {
-        walletDao.save(Wallet.builder().ownerId(ownerId).coins(coins).type(WalletType.USER).build());
+    private void verifyRefund(String refundTransactionId, Wallet payerBeforeWallet, Wallet recipientBeforeWallet,
+                                       String payerId, String recipientId) {
+        Transaction transaction = transactionDao.load(refundTransactionId).get();
+        assertEquals(TransactionStatus.COMPLETED, transaction.getStatus());
+
+        Transaction orgTransaction = transactionDao.load(transaction.getRefundTransacIds().get(0)).get();
+        assertEquals(TransactionStatus.REFUNDED, orgTransaction.getStatus());
+
+        Wallet payerAfterWallet = walletDao.load(payerId).get();
+        Wallet recipientAfterWallet = walletDao.load(recipientId).get();
+        assertEquals(payerBeforeWallet, payerAfterWallet);
+        assertEquals(recipientBeforeWallet, recipientAfterWallet);
+    }
+
+    private Wallet createUserWallet(String ownerId, Map<String, Double> coins) {
+        Wallet wallet = Wallet.builder().ownerId(ownerId).coins(coins).type(WalletType.USER).build();
+        walletDao.save(wallet);
+        return wallet;
     }
 
     private Transaction createTransaction(double amount) {
@@ -283,12 +432,35 @@ public class LambdaTest {
     }
 
     private Transaction createTransaction(String currencyId, double amount) {
-        Transaction transaction = Transaction.builder().transactionId(UUID.randomUUID().toString())
-                .moneyAmount(new MoneyAmount().withCurrencyId(currencyId).withAmount(amount))
+        Transaction transaction = Transaction.builder()
+                .transactionId(UUID.randomUUID().toString())
+                .currencyId(currencyId)
+                .amount(amount)
                 .payerId(PAYER_ID).recipientId(RECIPIENT_ID)
-                .status(TransactionStatus.PENDING).type(TransactionType.TRANSFER).build();
+                .status(TransactionStatus.PENDING)
+                .type(TransactionType.TRANSFER)
+                .build();
         transactionDao.save(transaction);
         return transaction;
+    }
+
+    private Transaction createRefundTransaction(Transaction transaction) {
+        Transaction refundTransaction = Transaction.builder()
+                .transactionId(UUID.randomUUID().toString())
+                .currencyId(transaction.getCurrencyId())
+                .amount(transaction.getAmount())
+                .payerId(transaction.getRecipientId())
+                .recipientId(transaction.getPayerId())
+                .status(TransactionStatus.PENDING)
+                .type(TransactionType.REFUND)
+                .refundTransacIds(ImmutableList.of(transaction.getTransactionId()))
+                .build();
+        transactionDao.save(refundTransaction);
+
+        transaction = transactionDao.load(transaction.getTransactionId()).get();
+        transaction.setStatus(TransactionStatus.REFUND_STARTED);
+        transactionDao.save(transaction);
+        return refundTransaction;
     }
 
     private static void createTable() {

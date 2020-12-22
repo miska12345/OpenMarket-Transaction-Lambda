@@ -16,6 +16,10 @@ Resources:
       MemorySize: 512
       Timeout: 30
       Role: arn:aws:iam::185046651126:role/LambdaRole
+      Environment:
+        Variables:
+          enablePublishToSNS: true
+          onProcessedTopicArn: arn:aws:sns:us-west-2:185046651126:OnTransactionProcessed
       Events:
         SQSEvent:
           Type: SQS
